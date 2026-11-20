@@ -1,0 +1,15 @@
+services:
+  web:
+    build: .
+    image: oral-history-mute:latest
+    ports:
+      - "8000:8000"
+    environment:
+      DB_PATH: /data/app.db
+    volumes:
+      # SQLite 数据落在命名卷上，容器重启后仍可按标记号核对剩余时段
+      - mute-data:/data
+    restart: unless-stopped
+
+volumes:
+  mute-data:

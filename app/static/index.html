@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>口述史馆 · 禁播消音标记管理</title>
+<style>
+  :root { --line:#d0d7de; --bg:#f6f8fa; --accent:#0969da; --danger:#cf222e; }
+  * { box-sizing: border-box; }
+  body { font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+         margin: 0; color: #1f2328; background: #fff; }
+  header { background: var(--bg); border-bottom: 1px solid var(--line); padding: 12px 24px; }
+  header h1 { font-size: 18px; margin: 0; }
+  nav { display: flex; gap: 4px; padding: 8px 24px 0; border-bottom: 1px solid var(--line); }
+  nav button { border: 1px solid transparent; background: none; padding: 8px 14px;
+               font-size: 14px; cursor: pointer; border-radius: 6px 6px 0 0; }
+  nav button.active { border-color: var(--line); border-bottom-color: #fff;
+                      background: #fff; font-weight: 600; margin-bottom: -1px; }
+  main { padding: 20px 24px 60px; max-width: 1100px; }
+  section.tab { display: none; }
+  section.tab.active { display: block; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13px; }
+  th, td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; }
+  th { background: var(--bg); }
+  input, textarea, select { font: inherit; padding: 6px 8px; border: 1px solid var(--line);
+                            border-radius: 6px; }
+  textarea { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; }
+  button.act { background: var(--accent); color: #fff; border: none; padding: 7px 16px;
+               border-radius: 6px; cursor: pointer; font-size: 14px; }
+  button.act:hover { opacity: .9; }
+  button.link { background: none; border: none; color: var(--accent); cursor: pointer;
+                padding: 2px 6px; font-size: 13px; }
+  button.danger { color: var(--danger); }
+  .card { border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin: 16px 0; }
+  .msg { padding: 8px 12px; border-radius: 6px; margin: 10px 0; font-size: 13px; display: none; }
+  .msg.ok { display: block; background: #dafbe1; border: 1px solid #2da44e; }
+  .msg.err { display: block; background: #ffebe9; border: 1px solid var(--danger); }
+  .muted-ids { font-weight: 700; color: var(--danger); }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; }
+  .tag.active { background: #dafbe1; }
+  .tag.withdrawn { background: #eaeef2; color: #57606a; text-decoration: line-through; }
+  label { font-size: 13px; margin-right: 6px; }
+  .row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin: 10px 0; }
+  h3 { margin: 18px 0 8px; }
+  .hint { color: #57606a; font-size: 12px; }
+  code { background: var(--bg); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header><h1>口述史馆 · 禁播消音标记管理</h1></header>
+<nav>
+  <button data-tab="import" class="active">导入剪辑版</button>
+  <button data-tab="versions">版本与遮盖</button>
+  <button data-tab="markers">禁播标记</button>
+</nav>
+<main>
+
+<!-- ============ 导入 ============ -->
+<section id="tab-import" class="tab active">
+  <div class="card">
+    <h3>导入剪辑 CSV（导入后该版固定，不可再改）</h3>
+    <p class="hint">每行 4 列：<code>原录音号, 源起点ms, 源终点ms, 成片起点ms</code>。
+      首行可为表头 <code>recording_id,src_start_ms,src_end_ms,timeline_start_ms</code>。
+      片段按原速使用，成片时间线上不得重叠；区间含起点、不含终点。</p>
+    <div class="row">
+      <label>版本名称 <input id="imp-name" size="24" placeholder="如：一版短片"></label>
+      <button class="link" id="imp-sample" type="button">填入示例</button>
+    </div>
+    <textarea id="imp-csv" rows="8" placeholder="recording_id,src_start_ms,src_end_ms,timeline_start_ms"></textarea>
+    <div class="row"><button class="act" id="imp-submit">导入</button></div>
+    <div class="msg" id="imp-msg"></div>
+  </div>
+</section>
+
+<!-- ============ 版本 ============ -->
+<section id="tab-versions" class="tab">
+  <div class="row">
+    <button class="act" id="ver-refresh">刷新版本列表</button>
+    <span class="hint">选择版本可查看片段、登记禁播标记、查看该版当前需遮盖的成片时段。</span>
+  </div>
+  <div id="ver-list"></div>
+  <div id="ver-detail"></div>
+</section>
+
+<!-- ============ 标记 ============ -->
+<section id="tab-markers" class="tab">
+  <div class="row">
+    <button class="act" id="mk-refresh">刷新标记列表</button>
+    <span class="hint">点开标记可核对剩余生效时段、整笔撤回或按成片时段局部解除（解除作用于所有版本）。</span>
+  </div>
+  <div id="mk-list"></div>
+  <div id="mk-detail"></div>
+</section>
+
+</main>
+<script>
+"use strict";
+
+// ---------- 工具 ----------
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+async function api(method, url, body) {
+  const opt = { method, headers: {} };
+  if (body !== undefined) {
+    opt.headers["Content-Type"] = "application/json";
+    opt.body = JSON.stringify(body);
+  }
+  const r = await fetch(url, opt);
+  let data = null;
+  try { data = await r.json(); } catch (e) { /* 非 JSON */ }
+  if (!r.ok) {
+    const d = data && data.detail;
+    throw new Error(typeof d === "string" ? d : (d ? JSON.stringify(d) : "HTTP " + r.status));
+  }
+  return data;
+}
+
+function showMsg(el, text, ok) {
+  el.className = "msg " + (ok ? "ok" : "err");
+  el.textContent = text;
+}
+
+function rangeTable(rows, cols) {
+  let h = "<table><tr>" + cols.map(c => "<th>" + c + "</th>").join("") + "</tr>";
+  for (const r of rows) h += "<tr>" + r.map(c => "<td>" + c + "</td>").join("") + "</tr>";
+  return h + "</table>";
+}
+
+// ---------- 选项卡 ----------
+document.querySelectorAll("nav button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("nav button").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll("section.tab").forEach(s => s.classList.remove("active"));
+    btn.classList.add("active");
+    $("tab-" + btn.dataset.tab).classList.add("active");
+    if (btn.dataset.tab === "versions") loadVersions();
+    if (btn.dataset.tab === "markers") loadMarkers();
+  });
+});
+
+// ---------- 导入 ----------
+$("imp-sample").addEventListener("click", () => {
+  $("imp-csv").value = [
+    "recording_id,src_start_ms,src_end_ms,timeline_start_ms",
+    "REC-001,1000,5000,0",
+    "REC-002,0,3000,4000",
+    "REC-001,8000,10000,7000"
+  ].join("\n");
+});
+
+$("imp-submit").addEventListener("click", async () => {
+  const msg = $("imp-msg");
+  try {
+    const v = await api("POST", "/api/versions",
+      { name: $("imp-name").value.trim(), csv_text: $("imp-csv").value });
+    showMsg(msg, `已导入版本 #${v.id}「${v.name}」，共 ${v.segments.length} 个片段，剪辑版已固定。`, true);
+    $("imp-csv").value = "";
+  } catch (e) { showMsg(msg, "导入失败：" + e.message, false); }
+});
+
+// ---------- 版本 ----------
+async function loadVersions() {
+  const list = await api("GET", "/api/versions");
+  if (!list.length) { $("ver-list").innerHTML = "<p class='hint'>尚无版本，请先导入。</p>"; return; }
+  $("ver-list").innerHTML = rangeTable(
+    list.map(v => [
+      "#" + v.id, esc(v.name), v.segment_count, esc(v.created_at),
+      `<button class="link" onclick="showVersion(${v.id})">片段 / 遮盖 / 登记标记</button>`
+    ]),
+    ["版本", "名称", "片段数", "导入时间", "操作"]);
+}
+
+async function showVersion(vid) {
+  const [v, muted] = await Promise.all([
+    api("GET", "/api/versions/" + vid),
+    api("GET", "/api/versions/" + vid + "/muted"),
+  ]);
+  let h = `<div class="card"><h3>版本 #${v.id}「${esc(v.name)}」剪辑表（已固定）</h3>`;
+  h += rangeTable(
+    v.segments.map(s => [
+      s.id, esc(s.recording_id),
+      `[${s.src_start_ms}, ${s.src_end_ms})`,
+      `[${s.tl_start_ms}, ${s.tl_end_ms})`
+    ]),
+    ["片段号", "原录音号", "源时段 ms", "成片时段 ms"]);
+
+  h += "<h3>登记禁播标记（可跨剪接点）</h3><div class='row'>"
+    + `<label>成片起点 ms <input id="mk-start-${vid}" type="number" min="0" size="10"></label>`
+    + `<label>成片终点 ms（不含）<input id="mk-end-${vid}" type="number" min="1" size="10"></label>`
+    + `<label>备注 <input id="mk-note-${vid}" size="16"></label>`
+    + `<button class="act" onclick="registerMarker(${vid})">登记</button></div>`
+    + `<div class="msg" id="mk-msg-${vid}"></div>`;
+
+  h += "<h3>该版当前需遮盖的成片时段</h3>";
+  h += muted.muted.length
+    ? rangeTable(
+        muted.muted.map(m => [
+          `[${m.start_ms}, ${m.end_ms})`,
+          `<span class="muted-ids">${m.marker_ids.map(i => "#" + i).join(" ")}</span>`
+        ]),
+        ["成片时段 ms（含起点、不含终点）", "标记号"])
+    : "<p class='hint'>当前无需遮盖的时段。</p>";
+  h += "</div>";
+  $("ver-detail").innerHTML = h;
+  $("ver-detail").scrollIntoView({ behavior: "smooth" });
+}
+
+async function registerMarker(vid) {
+  const msg = $("mk-msg-" + vid);
+  try {
+    const m = await api("POST", "/api/markers", {
+      version_id: vid,
+      start_ms: Number($("mk-start-" + vid).value),
+      end_ms: Number($("mk-end-" + vid).value),
+      note: $("mk-note-" + vid).value,
+    });
+    showMsg(msg, `已登记标记 #${m.id}，追溯到 ${m.source_ranges.length} 段原声。`, true);
+    showVersion(vid);
+  } catch (e) { showMsg(msg, "登记失败：" + e.message, false); }
+}
+
+// ---------- 标记 ----------
+async function loadMarkers() {
+  const list = await api("GET", "/api/markers");
+  if (!list.length) { $("mk-list").innerHTML = "<p class='hint'>尚无标记。</p>"; return; }
+  $("mk-list").innerHTML = rangeTable(
+    list.map(m => [
+      "#" + m.id, `#${m.version_id} ${esc(m.version_name)}`,
+      `[${m.start_ms}, ${m.end_ms})`,
+      `<span class="tag ${m.status}">${m.status === "active" ? "生效中" : "已撤回"}</span>`,
+      esc(m.note || ""),
+      `<button class="link" onclick="showMarker(${m.id})">详情 / 解除</button>`
+      + (m.status === "active"
+        ? ` <button class="link danger" onclick="withdrawMarker(${m.id})">整笔撤回</button>` : "")
+    ]),
+    ["标记号", "登记版", "成片时段 ms", "状态", "备注", "操作"]);
+}
+
+async function withdrawMarker(mid) {
+  if (!confirm(`确认整笔撤回标记 #${mid}？撤回后它在所有版本不再产生遮盖。`)) return;
+  try {
+    await api("POST", `/api/markers/${mid}/withdraw`);
+    await loadMarkers();
+    $("mk-detail").innerHTML = "";
+  } catch (e) { alert("撤回失败：" + e.message); }
+}
+
+async function showMarker(mid) {
+  const [m, impact] = await Promise.all([
+    api("GET", "/api/markers/" + mid),
+    api("GET", "/api/markers/" + mid + "/impact"),
+  ]);
+  let h = `<div class="card"><h3>标记 #${m.id}（登记于版本 #${m.version_id}「${esc(m.version_name)}」
+    成片时段 [${m.start_ms}, ${m.end_ms})）</h3>`;
+
+  h += "<h3>追溯到的原声时段</h3>" + rangeTable(
+    m.source_ranges.map(r => [esc(r.recording_id), `[${r.src_start_ms}, ${r.src_end_ms})`]),
+    ["原录音号", "源时段 ms"]);
+
+  h += "<h3>剩余仍生效的原声时段（重启后亦可按标记号核对）</h3>";
+  h += m.remaining_source_ranges.length
+    ? rangeTable(
+        m.remaining_source_ranges.map(r => [esc(r.recording_id), `[${r.src_start_ms}, ${r.src_end_ms})`]),
+        ["原录音号", "源时段 ms"])
+    : "<p class='hint'>无（已全部解除或已撤回）。</p>";
+
+  h += "<h3>各版中每次使用所需遮盖的成片时段</h3>";
+  for (const v of impact.versions) {
+    h += `<p><b>版本 #${v.version_id}「${esc(v.version_name)}」</b></p>`;
+    h += v.usages.length
+      ? rangeTable(v.usages.map(u => [`[${u.tl_start_ms}, ${u.tl_end_ms})`]), ["成片时段 ms"])
+      : "<p class='hint'>该版无涉及。</p>";
+  }
+
+  h += "<h3>解除记录</h3>";
+  h += m.lifts.length
+    ? rangeTable(
+        m.lifts.map(l => [
+          "#" + l.id, `#${l.version_id} ${esc(l.version_name)}`,
+          `[${l.tl_start_ms}, ${l.tl_end_ms})`,
+          l.source_ranges.map(r => `${esc(r.recording_id)} [${r.src_start_ms}, ${r.src_end_ms})`).join("<br>")
+        ]),
+        ["解除号", "操作版", "成片时段 ms", "换算到的原声时段"])
+    : "<p class='hint'>无。</p>";
+
+  if (m.status === "active") {
+    const versions = await api("GET", "/api/versions");
+    h += `<h3>局部解除（在任一版按成片时段，作用于所有版本）</h3><div class="row">`
+      + `<label>操作版 <select id="lift-ver-${mid}">`
+      + versions.map(v => `<option value="${v.id}">#${v.id} ${esc(v.name)}</option>`).join("")
+      + `</select></label>`
+      + `<label>成片起点 ms <input id="lift-start-${mid}" type="number" min="0" size="10"></label>`
+      + `<label>成片终点 ms（不含）<input id="lift-end-${mid}" type="number" min="1" size="10"></label>`
+      + `<button class="act" onclick="liftMarker(${mid})">解除</button></div>`
+      + `<div class="msg" id="lift-msg-${mid}"></div>`;
+  }
+  h += "</div>";
+  $("mk-detail").innerHTML = h;
+  $("mk-detail").scrollIntoView({ behavior: "smooth" });
+}
+
+async function liftMarker(mid) {
+  const msg = $("lift-msg-" + mid);
+  try {
+    const r = await api("POST", `/api/markers/${mid}/lifts`, {
+      version_id: Number($("lift-ver-" + mid).value),
+      start_ms: Number($("lift-start-" + mid).value),
+      end_ms: Number($("lift-end-" + mid).value),
+    });
+    showMsg(msg, `已登记解除 #${r.lift_id}，换算到 ${r.lifted_source_ranges.length} 段原声，作用于所有版本。`, true);
+    showMarker(mid);
+  } catch (e) { showMsg(msg, "解除失败：" + e.message, false); }
+}
+
+// ---------- 初始加载 ----------
+loadVersions();
+loadMarkers();
+</script>
+</body>
+</html>

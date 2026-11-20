@@ -1,0 +1,4 @@
+recording_id,src_start_ms,src_end_ms,timeline_start_ms
+REC-002,500,2500,0
+REC-001,3000,6000,2000
+REC-003,100,900,5000
