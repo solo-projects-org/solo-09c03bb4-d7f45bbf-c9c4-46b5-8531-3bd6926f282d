@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>口述史馆 · 禁播消音标记管理</title>
+<title>口述史馆 · 禁播消音标记与成片词表</title>
 <style>
   :root { --line:#d0d7de; --bg:#f6f8fa; --accent:#0969da; --danger:#cf222e; }
   * { box-sizing: border-box; }
@@ -39,6 +39,8 @@
   .tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; }
   .tag.active { background: #dafbe1; }
   .tag.withdrawn { background: #eaeef2; color: #57606a; text-decoration: line-through; }
+  .tag.bad { background: #ffebe9; color: var(--danger); }
+  .tag.wait { background: #fff8c5; }
   label { font-size: 13px; margin-right: 6px; }
   .row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin: 10px 0; }
   h3 { margin: 18px 0 8px; }
@@ -47,11 +49,13 @@
 </style>
 </head>
 <body>
-<header><h1>口述史馆 · 禁播消音标记管理</h1></header>
+<header><h1>口述史馆 · 禁播消音标记与成片词表</h1></header>
 <nav>
   <button data-tab="import" class="active">导入剪辑版</button>
   <button data-tab="versions">版本与遮盖</button>
   <button data-tab="markers">禁播标记</button>
+  <button data-tab="transcripts">逐词稿</button>
+  <button data-tab="wordlists">成片词表</button>
 </nav>
 <main>
 
@@ -90,6 +94,49 @@
   </div>
   <div id="mk-list"></div>
   <div id="mk-detail"></div>
+</section>
+
+<!-- ============ 逐词稿 ============ -->
+<section id="tab-transcripts" class="tab">
+  <div class="card">
+    <h3>上传 / 换稿（按原录音号）</h3>
+    <p class="hint">每行 3 列：<code>原声起点ms, 原声终点ms, 词</code>，表头可带可不带
+      <code>start_ms,end_ms,text</code>。区间含起点、不含终点；每行是一个整词单位。
+      换稿先完整校验，校验失败时旧稿原样保留；换稿成功修订号 +1。</p>
+    <div class="row">
+      <label>原录音号 <input id="tr-rec" size="20" placeholder="如：REC-001"></label>
+      <label>选择 CSV 文件 <input id="tr-file" type="file" accept=".csv,text/csv"></label>
+      <button class="link" id="tr-sample" type="button">填入示例</button>
+    </div>
+    <textarea id="tr-csv" rows="6" placeholder="start_ms,end_ms,text"></textarea>
+    <div class="row"><button class="act" id="tr-submit">上传 / 换稿</button></div>
+    <div class="msg" id="tr-msg"></div>
+  </div>
+  <div class="row">
+    <button class="act" id="tr-refresh">刷新已有逐词稿</button>
+    <span class="hint">点开可查看逐词明细。</span>
+  </div>
+  <div id="tr-list"></div>
+  <div id="tr-detail"></div>
+</section>
+
+<!-- ============ 成片词表 ============ -->
+<section id="tab-wordlists" class="tab">
+  <div class="card">
+    <h3>按剪辑版生成逐词成片词表</h3>
+    <p class="hint">整词落在一个剪辑片段内才收录；同一段原声用了多次就各列一次；
+      词与该版需遮盖的时段有交集时整词换成 <code>〔消音〕</code>。
+      缺稿时会列出所缺录音号并暂停下载。生成期间可照常换稿、改禁播标记；
+      下载前会核对生成时的转写稿与遮盖时段，有变动则整份不发、提示重试。</p>
+    <div class="row">
+      <label>剪辑版 <select id="wl-ver"></select></label>
+      <button class="act" id="wl-gen">生成词表</button>
+      <button class="link" id="wl-refresh">刷新生成记录</button>
+    </div>
+    <div class="msg" id="wl-msg"></div>
+  </div>
+  <div id="wl-list"></div>
+  <div id="wl-detail"></div>
 </section>
 
 </main>
@@ -137,6 +184,8 @@ document.querySelectorAll("nav button").forEach(btn => {
     $("tab-" + btn.dataset.tab).classList.add("active");
     if (btn.dataset.tab === "versions") loadVersions();
     if (btn.dataset.tab === "markers") loadMarkers();
+    if (btn.dataset.tab === "transcripts") loadTranscripts();
+    if (btn.dataset.tab === "wordlists") loadWordlists();
   });
 });
 
@@ -202,6 +251,11 @@ async function showVersion(vid) {
         ]),
         ["成片时段 ms（含起点、不含终点）", "标记号"])
     : "<p class='hint'>当前无需遮盖的时段。</p>";
+
+  h += `<h3>该版成片词表</h3><div class="row">`
+    + `<button class="act" onclick="generateAndDownload(${vid})">生成本版逐词 CSV 并下载</button>`
+    + `<span class="hint">整词落在片段内才收录；与遮盖时段有交集整词换〔消音〕；下载前核对生成时的稿件与遮盖时段。</span>`
+    + `</div><div class="msg" id="wl-ver-msg-${vid}"></div>`;
   h += "</div>";
   $("ver-detail").innerHTML = h;
   $("ver-detail").scrollIntoView({ behavior: "smooth" });
@@ -312,6 +366,192 @@ async function liftMarker(mid) {
     showMsg(msg, `已登记解除 #${r.lift_id}，换算到 ${r.lifted_source_ranges.length} 段原声，作用于所有版本。`, true);
     showMarker(mid);
   } catch (e) { showMsg(msg, "解除失败：" + e.message, false); }
+}
+
+// ---------- 逐词稿 ----------
+$("tr-sample").addEventListener("click", () => {
+  $("tr-rec").value = "REC-001";
+  $("tr-csv").value = [
+    "start_ms,end_ms,text",
+    "1000,1500,那",
+    "1500,1900,时候",
+    "1900,2600,我们",
+    "2600,3400,还没",
+    "3400,4200,搬走"
+  ].join("\n");
+});
+
+$("tr-file").addEventListener("change", async () => {
+  const f = $("tr-file").files[0];
+  if (!f) return;
+  $("tr-csv").value = await f.text();
+  // 文件名形如 transcript_REC-001.csv 时自动带出录音号
+  const m = f.name.match(/^(?:transcript_)?(.+)\.csv$/i);
+  if (m && !/^transcript$/i.test(m[1]) && !$("tr-rec").value.trim()) {
+    $("tr-rec").value = m[1];
+  }
+});
+
+$("tr-submit").addEventListener("click", async () => {
+  const msg = $("tr-msg");
+  const rid = $("tr-rec").value.trim();
+  if (!rid) { showMsg(msg, "请填写原录音号。", false); return; }
+  try {
+    const t = await api("PUT", "/api/transcripts/" + encodeURIComponent(rid),
+      { csv_text: $("tr-csv").value });
+    showMsg(msg, `已保存 ${rid} 的逐词稿：修订 ${t.revision}，共 ${t.word_count} 个词。`, true);
+    $("tr-csv").value = "";
+    loadTranscripts();
+  } catch (e) { showMsg(msg, "换稿失败（旧稿保留）：" + e.message, false); }
+});
+
+$("tr-refresh").addEventListener("click", loadTranscripts);
+
+async function loadTranscripts() {
+  const list = await api("GET", "/api/transcripts");
+  if (!list.length) { $("tr-list").innerHTML = "<p class='hint'>尚无逐词稿。</p>"; return; }
+  $("tr-list").innerHTML = rangeTable(
+    list.map(t => [
+      esc(t.recording_id), t.revision, t.word_count, esc(t.updated_at),
+      `<button class="link" data-rid="${esc(t.recording_id)}" onclick="showTranscript(this.dataset.rid)">逐词明细</button>`
+    ]),
+    ["原录音号", "修订", "词数", "更新时间", "操作"]);
+}
+
+async function showTranscript(rid) {
+  const t = await api("GET", "/api/transcripts/" + encodeURIComponent(rid));
+  let h = `<div class="card"><h3>${esc(t.recording_id)} · 修订 ${t.revision}（${t.word_count} 词）</h3>`;
+  h += rangeTable(
+    t.words.map(w => [w.seq + 1, `[${w.start_ms}, ${w.end_ms})`, esc(w.text)]),
+    ["序", "原声时段 ms", "词"]);
+  h += "</div>";
+  $("tr-detail").innerHTML = h;
+  $("tr-detail").scrollIntoView({ behavior: "smooth" });
+}
+
+// ---------- 成片词表 ----------
+async function fillWordlistVersions() {
+  const versions = await api("GET", "/api/versions");
+  const sel = $("wl-ver");
+  const prev = sel.value;
+  sel.innerHTML = versions.map(v =>
+    `<option value="${v.id}">#${v.id} ${esc(v.name)}</option>`).join("");
+  if (prev && versions.some(v => String(v.id) === prev)) sel.value = prev;
+}
+
+$("wl-gen").addEventListener("click", async () => {
+  const msg = $("wl-msg");
+  const vid = $("wl-ver").value;
+  if (!vid) { showMsg(msg, "请先导入剪辑版。", false); return; }
+  try {
+    const g = await api("POST", `/api/versions/${vid}/wordlists`);
+    if (g.status === "missing_transcripts") {
+      showMsg(msg, `缺稿，暂停下载。所缺录音号：${g.missing_recording_ids.join("、")}。补稿后请重新生成。`, false);
+    } else {
+      showMsg(msg, `已生成词表 #${g.id}，共 ${g.row_count} 行，可下载。`, true);
+    }
+    loadWordlists();
+  } catch (e) { showMsg(msg, "生成失败：" + e.message, false); }
+});
+
+$("wl-refresh").addEventListener("click", loadWordlists);
+
+const GEN_STATUS = {
+  ready: ["可下载", "active"],
+  missing_transcripts: ["缺稿 · 暂停下载", "bad"],
+  stale: ["已失效 · 需重试", "bad"],
+  failed: ["失败", "bad"],
+  running: ["生成中", "wait"],
+};
+
+async function loadWordlists() {
+  await fillWordlistVersions();
+  const list = await api("GET", "/api/generations");
+  if (!list.length) { $("wl-list").innerHTML = "<p class='hint'>尚无生成记录。</p>"; return; }
+  let h = rangeTable(
+    list.map(g => {
+      const st = GEN_STATUS[g.status] || [g.status, ""];
+      let detail = "";
+      if (g.status === "missing_transcripts" && g.missing_recording_ids.length)
+        detail = "所缺：" + g.missing_recording_ids.map(esc).join("、");
+      if (g.status === "stale" && g.stale_reasons.length)
+        detail = esc(g.stale_reasons.join("；"));
+      return [
+        "#" + g.id,
+        `#${g.version_id} ${esc(g.version_name)}`,
+        `<span class="tag ${st[1]}">${st[0]}</span>`,
+        g.row_count === null ? "—" : g.row_count,
+        esc(g.created_at),
+        detail,
+        g.status === "ready"
+          ? `<button class="act" onclick="downloadWordlist(${g.id})">下载逐词 CSV</button>`
+          : `<button class="link" onclick="showGeneration(${g.id})">查看原因</button>`
+      ];
+    }),
+    ["生成号", "剪辑版", "状态", "行数", "生成时间", "说明", "操作"]);
+  $("wl-list").innerHTML = h;
+  $("wl-detail").innerHTML = "";
+}
+
+async function showGeneration(gid) {
+  const g = await api("GET", "/api/generations/" + gid);
+  let h = `<div class="card"><h3>词表生成 #${g.id}（版本 #${g.version_id}「${esc(g.version_name)}」）</h3>`;
+  h += `<p>状态：<b>${esc((GEN_STATUS[g.status] || [g.status])[0])}</b></p>`;
+  if (g.missing_recording_ids.length)
+    h += `<p>所缺录音号：<b>${g.missing_recording_ids.map(esc).join("、")}</b></p>`;
+  if (g.stale_reasons.length) {
+    h += "<h3>失效原因</h3>" + rangeTable(
+      g.stale_reasons.map(r => [esc(r)]), ["原因"]);
+  }
+  h += "<h3>生成时所用转写稿快照</h3>" + rangeTable(
+    g.transcript_snapshot.map(t => [esc(t.recording_id), t.revision, esc(t.digest.slice(0, 16) + "…")]),
+    ["原录音号", "修订", "内容摘要"]);
+  h += "<h3>生成时该版需遮盖的成片时段</h3>";
+  h += g.muted_snapshot.length
+    ? rangeTable(g.muted_snapshot.map(m => [`[${m[0]}, ${m[1]})`]), ["成片时段 ms"])
+    : "<p class='hint'>无。</p>";
+  h += "</div>";
+  $("wl-detail").innerHTML = h;
+  $("wl-detail").scrollIntoView({ behavior: "smooth" });
+}
+
+async function downloadWordlist(gid, msgEl) {
+  const msg = msgEl || $("wl-msg");
+  const r = await fetch(`/api/generations/${gid}/download`);
+  if (!r.ok) {
+    let d = null;
+    try { d = await r.json(); } catch (e) { /* ignore */ }
+    const detail = (d && d.detail) || ("HTTP " + r.status);
+    const missing = d && d.missing_recording_ids && d.missing_recording_ids.length
+      ? "\n所缺录音号：" + d.missing_recording_ids.join("、") : "";
+    showMsg(msg, "下载未放行：" + detail + missing, false);
+    loadWordlists();
+    return;
+  }
+  const blob = await r.blob();
+  const cd = r.headers.get("content-disposition") || "";
+  const m = cd.match(/filename="([^"]+)"/);
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = m ? m[1] : `wordlist_${gid}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  showMsg(msg, `已下载词表 #${gid}。`, true);
+}
+
+async function generateAndDownload(vid) {
+  const msg = $("wl-ver-msg-" + vid);
+  try {
+    const g = await api("POST", `/api/versions/${vid}/wordlists`);
+    if (g.status === "missing_transcripts") {
+      showMsg(msg, `缺稿，下载已暂停。所缺录音号：${g.missing_recording_ids.join("、")}。`, false);
+      return;
+    }
+    showMsg(msg, `已生成词表 #${g.id}（${g.row_count} 行），正在下载…`, true);
+    await downloadWordlist(g.id, msg);
+  } catch (e) { showMsg(msg, "生成或下载失败：" + e.message, false); }
 }
 
 // ---------- 初始加载 ----------

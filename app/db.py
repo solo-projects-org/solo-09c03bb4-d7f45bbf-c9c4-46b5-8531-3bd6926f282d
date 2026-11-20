@@ -74,6 +74,48 @@ CREATE TABLE IF NOT EXISTS lift_ranges (
     CHECK (src_end_ms > src_start_ms)
 );
 CREATE INDEX IF NOT EXISTS idx_lift_ranges_lift ON lift_ranges(lift_id);
+
+-- 逐词转写稿：按原录音号保存，可整份换稿（换稿成功才替换旧稿）
+CREATE TABLE IF NOT EXISTS transcripts (
+    recording_id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL DEFAULT 1,
+    digest TEXT NOT NULL,                 -- 规范化内容的 SHA-256，用于生成/放行时比对
+    word_count INTEGER NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    CHECK (revision >= 1)
+);
+
+CREATE TABLE IF NOT EXISTS transcript_words (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recording_id TEXT NOT NULL REFERENCES transcripts(recording_id),
+    seq INTEGER NOT NULL,
+    start_ms INTEGER NOT NULL,            -- 原声起点（含）
+    end_ms INTEGER NOT NULL,              -- 原声终点（不含）
+    text TEXT NOT NULL,
+    CHECK (start_ms >= 0),
+    CHECK (end_ms > start_ms)
+);
+CREATE INDEX IF NOT EXISTS idx_transcript_words_rec
+    ON transcript_words(recording_id, start_ms);
+
+-- 一次性生成的成片词表：保存生成时的转写稿/遮盖时段快照与整份文件，
+-- 放行下载前重新比对，任何一侧变动都整份不发。
+CREATE TABLE IF NOT EXISTS wordlist_generations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    version_id INTEGER NOT NULL REFERENCES versions(id),
+    status TEXT NOT NULL DEFAULT 'running'
+        CHECK (status IN ('running','ready','missing_transcripts','stale','failed')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    finished_at TEXT,
+    transcript_snapshot TEXT NOT NULL,    -- JSON [{recording_id, revision, digest}]
+    missing_snapshot TEXT NOT NULL DEFAULT '[]',  -- JSON [recording_id, ...]
+    muted_snapshot TEXT NOT NULL,         -- JSON [[start, end], ...] 合并后的遮盖时段
+    stale_reasons TEXT NOT NULL DEFAULT '[]',
+    row_count INTEGER,
+    csv_text TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_wordlist_generations_version
+    ON wordlist_generations(version_id);
 """
 
 
@@ -90,6 +132,8 @@ def init_db(db_path: str) -> None:
     os.makedirs(parent, exist_ok=True)
     conn = connect(db_path)
     try:
+        # WAL：生成词表时的读快照不阻塞换稿、改标记等写入
+        conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(SCHEMA)
     finally:
         conn.close()

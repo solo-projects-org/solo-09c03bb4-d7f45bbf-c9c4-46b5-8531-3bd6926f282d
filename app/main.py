@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from . import db, logic
@@ -34,10 +34,14 @@ class LiftIn(BaseModel):
     end_ms: int = Field(gt=0)
 
 
+class TranscriptIn(BaseModel):
+    csv_text: str = Field(min_length=1)
+
+
 def create_app(db_path: str | None = None) -> FastAPI:
     path = db_path or os.environ.get("DB_PATH", os.path.join("data", "app.db"))
     db.init_db(path)
-    app = FastAPI(title="口述史馆禁播消音标记管理", version="1.0.0")
+    app = FastAPI(title="口述史馆禁播消音标记与成片词表", version="1.1.0")
     app.state.db_path = path
 
     @contextmanager
@@ -50,7 +54,9 @@ def create_app(db_path: str | None = None) -> FastAPI:
 
     @app.exception_handler(DomainError)
     async def domain_error_handler(_request: Request, exc: DomainError):
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        content = {"detail": exc.detail}
+        content.update(exc.extra)
+        return JSONResponse(status_code=exc.status_code, content=content)
 
     # ------------------------------------------------------------- 网页
 
@@ -115,6 +121,50 @@ def create_app(db_path: str | None = None) -> FastAPI:
     def api_marker_impact(marker_id: int):
         with session() as conn:
             return logic.marker_impact(conn, marker_id)
+
+    # ------------------------------------------------------------- 逐词稿
+
+    @app.put("/api/transcripts/{recording_id}")
+    def api_replace_transcript(recording_id: str, body: TranscriptIn):
+        with session() as conn:
+            return logic.replace_transcript(conn, recording_id, body.csv_text)
+
+    @app.get("/api/transcripts")
+    def api_list_transcripts():
+        with session() as conn:
+            return logic.list_transcripts(conn)
+
+    @app.get("/api/transcripts/{recording_id}")
+    def api_get_transcript(recording_id: str):
+        with session() as conn:
+            return logic.get_transcript(conn, recording_id)
+
+    # ------------------------------------------------------------- 成片词表
+
+    @app.post("/api/versions/{version_id}/wordlists", status_code=201)
+    def api_generate_wordlist(version_id: int):
+        with session() as conn:
+            return logic.generate_wordlist(conn, version_id)
+
+    @app.get("/api/generations")
+    def api_list_generations():
+        with session() as conn:
+            return logic.list_generations(conn)
+
+    @app.get("/api/generations/{generation_id}")
+    def api_get_generation(generation_id: int):
+        with session() as conn:
+            return logic.get_generation(conn, generation_id)
+
+    @app.get("/api/generations/{generation_id}/download")
+    def api_download_generation(generation_id: int):
+        with session() as conn:
+            filename, csv_text = logic.wordlist_download(conn, generation_id)
+        return PlainTextResponse(
+            csv_text,
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     return app
 
